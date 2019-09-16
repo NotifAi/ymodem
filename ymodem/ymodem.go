@@ -125,6 +125,14 @@ func ModemSend(c io.ReadWriter, bs int, files []File) error {
 
 	var err error
 
+	abortBars := func(){
+		for _, f := range files {
+			if !f.bytesBar.Completed() {
+				f.bytesBar.Abort(true)
+			}
+		}
+	}
+
 	defer func() {
 		if err != nil {
 			cancel()
@@ -133,6 +141,8 @@ func ModemSend(c io.ReadWriter, bs int, files []File) error {
 
 	pBars := mpb.New(mpb.WithWidth(64))
 	defer pBars.Wait()
+	//to unblock if files were not sent
+	defer abortBars()
 
 	for fi := range files {
 		var blocks = len(files[fi].Data) / bs
@@ -156,6 +166,7 @@ func ModemSend(c io.ReadWriter, bs int, files []File) error {
 		)
 	}
 
+//	pBars.Add()
 	startTs := time.Now()
 
 	retryCount := 5

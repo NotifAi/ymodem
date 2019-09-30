@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
-	"github.com/vbauerster/mpb/v4"
-	"github.com/vbauerster/mpb/v4/decor"
+	ytypes "github.com/NotifAi/ymodem/types"
 )
 
 const SOH byte = 0x01
@@ -22,10 +20,10 @@ const POLL byte = 0x43
 var InvalidPacket = errors.New("invalid packet")
 
 type File struct {
-	Data   []byte
-	Name   string
-	blocks int
-	bytesBar *mpb.Bar
+	Data     []byte
+	Name     string
+	blocks   int
+	bytesBar ytypes.Bar
 }
 
 func CRC16(data []byte) uint16 {
@@ -116,8 +114,12 @@ func sendBlock(c io.ReadWriter, bs int, block uint8, data []byte) error {
 	return nil
 }
 
-func ModemSend(c io.ReadWriter, bs int, files []File) error {
+func ModemSend(c io.ReadWriter, progress ytypes.Progress, bs int, files []File) error {
 	oBuffer := make([]byte, 1)
+
+	if progress == nil {
+		progress = ytypes.DummyProgress()
+	}
 
 	cancel := func() {
 		_, _ = c.Write([]byte{CAN, CAN})
@@ -131,17 +133,6 @@ func ModemSend(c io.ReadWriter, bs int, files []File) error {
 		}
 	}()
 
-	pBars := mpb.New(mpb.WithWidth(64))
-
-	defer func() {
-		for i := range files {
-			if !files[i].bytesBar.Completed() {
-				files[i].bytesBar.Abort(true)
-			}
-		}
-		pBars.Wait()
-	}()
-
 	for fi := range files {
 		var blocks = len(files[fi].Data) / bs
 		if len(files[fi].Data) > (blocks * bs) {
@@ -151,24 +142,12 @@ func ModemSend(c io.ReadWriter, bs int, files []File) error {
 		blocks++
 
 		files[fi].blocks = blocks
-
-		files[fi].bytesBar = pBars.AddBar(int64(len(files[fi].Data)),
-			mpb.BarClearOnComplete(),
-			mpb.PrependDecorators(
-				decor.Name(files[fi].Name, decor.WC{W: len(files[fi].Name) + 1, C: decor.DSyncSpaceR}),
-				decor.CountersNoUnit("%d / %d", decor.WCSyncWidth),
-				decor.OnComplete(decor.Name("", decor.WCSyncSpaceR), " done!"),
-			),
-			mpb.AppendDecorators(
-				decor.Percentage(decor.WC{W: 5}),),
-		)
+		files[fi].bytesBar = progress.Create(files[fi].Name, len(files[fi].Data))
 	}
-
-	startTs := time.Now()
 
 	retryCount := 5
 
-	min := func (x, y int) int {
+	min := func(x, y int) int {
 		if x <= y {
 			return x
 		}
@@ -246,7 +225,7 @@ func ModemSend(c io.ReadWriter, bs int, files []File) error {
 
 				if oBuffer[0] == ACK {
 					block++
-					files[fi].bytesBar.IncrBy(to-from, time.Since(startTs))
+					_ = files[fi].bytesBar.Add(to - from)
 				} else {
 					failed++
 				}
@@ -393,7 +372,9 @@ func ModemReceive(c io.ReadWriter, bs int) (string, []byte, error) {
 	filename := string(pktData[0:filenameEnd])
 
 	var filesize int
-	fmt.Sscanf(string(pktData[filenameEnd+1:]), "%d", &filesize)
+	if _, err := fmt.Sscanf(string(pktData[filenameEnd+1:]), "%d", &filesize); err != nil {
+		return "", nil, err
+	}
 
 	if _, err := c.Write([]byte{POLL}); err != nil {
 		return "", nil, err

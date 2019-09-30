@@ -23,7 +23,7 @@ func main() {
 	var message string
 	var wait string
 	var blockSize string
-	var bSize int = 128
+	var bSize = 128
 
 	var cmdSend = &cobra.Command{
 		Use:   "send [port]",
@@ -85,8 +85,13 @@ func main() {
 				files = append(files, ymodem.File{Data: data, Name: filepath.Base(f)})
 			}
 
+			bar := newProgress()
 			// Send files
-			if err := ymodem.ModemSend(connection, bSize, files); err != nil {
+			err = ymodem.ModemSend(connection, bar, bSize, files)
+
+			bar.Shutdown()
+
+			if err != nil {
 				log.Fatalln(err.Error())
 			}
 

@@ -5,21 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 
 	"github.com/howeyc/crc16"
 
-	ytypes "github.com/notifai/ymodem/types"
+	ytypes "github.com/sandacn/ymodem/types"
 )
 
 const (
-	SOH  byte = 0x01
-	STX  byte = 0x02
-	EOT  byte = 0x04
-	ACK  byte = 0x06
-	NAK  byte = 0x15
-	CAN  byte = 0x18
+	SOH byte = 0x01
+	STX byte = 0x02
+	EOT byte = 0x04
+	ACK byte = 0x06
+	//ACK byte = 0x43
+	NAK byte = 0x15
+	CAN byte = 0x18
 	POLL byte = 0x43
 )
+
 
 var InvalidPacket = errors.New("invalid packet")
 
@@ -30,6 +33,9 @@ type File struct {
 	bytesBar ytypes.Bar
 }
 
+func ChecksumCCITTFalse(data []byte) uint16 { return crc16.Update(0x0000, crc16.CCITTFalseTable, data) }
+
+
 func sendBlock(c io.ReadWriter, bs int, block uint8, data []byte) error {
 	var toSend bytes.Buffer
 
@@ -39,7 +45,7 @@ func sendBlock(c io.ReadWriter, bs int, block uint8, data []byte) error {
 		toSend.WriteByte(STX)
 	}
 
-	toSend.WriteByte(block)       // block id
+	toSend.WriteByte(block) // block id
 	toSend.WriteByte(255 - block) // 2nd complement to block id
 	toSend.Write(data)
 
@@ -49,12 +55,13 @@ func sendBlock(c io.ReadWriter, bs int, block uint8, data []byte) error {
 		toSend.Write(buf)
 	}
 
-	crc := crc16.ChecksumCCITTFalse(toSend.Bytes()[3:])
+	crc := ChecksumCCITTFalse(toSend.Bytes()[3:])
 	toSend.Write([]byte{uint8(crc >> 8)})
 	toSend.Write([]byte{uint8(crc & 0x0FF)})
 
 	sent := 0
 	for sent < toSend.Len() {
+		log.Printf("[write] data: %X", toSend.Bytes()[sent:])
 		if n, err := c.Write(toSend.Bytes()[sent:]); err != nil {
 			return err
 		} else {
@@ -71,8 +78,6 @@ func ModemSend(c io.ReadWriter, progress ytypes.Progress, bs int, files []File) 
 	if progress == nil {
 		progress = ytypes.DummyProgress()
 	}
-
-	defer progress.Shutdown()
 
 	cancel := func() {
 		_, _ = c.Write([]byte{CAN, CAN})
@@ -120,8 +125,10 @@ func ModemSend(c io.ReadWriter, progress ytypes.Progress, bs int, files []File) 
 			return err
 		}
 
+		log.Printf("start send file, read oBuffer, expecting:[%X], receive %X", POLL, oBuffer)
+
 		if oBuffer[0] == POLL {
-			for i := 0; i < 5; i++ {
+			for i := 0; i < 10; i++ {
 				var send bytes.Buffer
 				send.WriteString(files[fi].Name)
 				send.WriteByte(0x0)
@@ -138,6 +145,7 @@ func ModemSend(c io.ReadWriter, progress ytypes.Progress, bs int, files []File) 
 				if _, err = c.Read(oBuffer); err != nil {
 					return err
 				}
+				log.Printf("after send block, read data: %X, expect ACK(%X)/NAK(%X)", oBuffer, ACK, NAK)
 
 				switch oBuffer[0] {
 				case NAK:
@@ -146,7 +154,12 @@ func ModemSend(c io.ReadWriter, progress ytypes.Progress, bs int, files []File) 
 						err = errors.New("amount of retries exceeded")
 						return err
 					}
+				case ACK:
+					goto confirmation
+				case POLL:
+					continue
 				case CAN:
+					/*
 					// receiver is seem to cancel current transaction
 					// wait for yet another CAN symbol followed by ACK
 					tmpBuf := make([]byte, 3)
@@ -156,16 +169,15 @@ func ModemSend(c io.ReadWriter, progress ytypes.Progress, bs int, files []File) 
 						return err
 					}
 					err = errors.New("receiver rejected to create file")
-					return err
-				case ACK:
-					goto confirmation
+					 */
+					continue
 				default:
 					err = errors.New("failed to send initial block")
 					return err
 				}
 			}
 		} else {
-			err = fmt.Errorf("invalid handshake symbol %c", oBuffer[0])
+			err = errors.New("invalid handshake symbol")
 			return err
 		}
 
@@ -174,6 +186,9 @@ func ModemSend(c io.ReadWriter, progress ytypes.Progress, bs int, files []File) 
 		if _, err = c.Read(oBuffer); err != nil {
 			return err
 		}
+
+		log.Printf("after send block 1 , read data: %X, expect POLL(%X)", oBuffer, POLL)
+
 
 		// Send file data
 		if oBuffer[0] == POLL {
@@ -184,14 +199,20 @@ func ModemSend(c io.ReadWriter, progress ytypes.Progress, bs int, files []File) 
 				remaining := len(files[fi].Data[from:])
 
 				to := min(remaining, bs) + from
+				log.Printf("try to send block(%d) ... ", block)
 
 				if err = sendBlock(c, bs, uint8(block), files[fi].Data[from:to]); err != nil {
 					return err
 				}
 
+				log.Printf("sent block(%d) ... ", block)
+
 				if _, err := c.Read(oBuffer); err != nil {
 					return err
 				}
+
+				log.Printf("expecting recv data(%x), recved(%X)", ACK, oBuffer)
+
 
 				if oBuffer[0] == ACK {
 					block++
@@ -238,6 +259,7 @@ func ModemSend(c io.ReadWriter, progress ytypes.Progress, bs int, files []File) 
 		return err
 	}
 
+	log.Printf("stage4, expect [%X], read [%X]\n", ACK, oBuffer)
 	if oBuffer[0] != ACK {
 		return errors.New("stage 4: failed to send end block")
 	}
@@ -310,7 +332,7 @@ func receivePacket(c io.ReadWriter, bs int) ([]byte, error) {
 	crc |= uint16(oBuffer[0])
 
 	// Calculate CRC
-	if crc16.ChecksumCCITTFalse(pData.Bytes()) != crc {
+	if ChecksumCCITTFalse(pData.Bytes()) != crc {
 		if _, err := c.Write([]byte{NAK}); err != nil {
 			return nil, err
 		}

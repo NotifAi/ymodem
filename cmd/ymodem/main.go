@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/notifai/serial"
+	"github.com/goburrow/serial"
 	"github.com/spf13/cobra"
 
-	ytypes "github.com/notifai/ymodem/types"
-	"github.com/notifai/ymodem/ymodem"
+	ytypes "github.com/sandacn/ymodem/types"
+	"github.com/sandacn/ymodem/ymodem"
 )
 
 func main() {
@@ -32,7 +32,16 @@ func main() {
 		Long:  ``,
 		Run: func(cmd *cobra.Command, args []string) {
 			// Open connection
-			connection, err := serial.OpenPort(serial.Config{Name: port, Baud: 115200})
+			serialConfig := serial.Config{
+				Address:  port,
+				BaudRate: 115200,
+				DataBits: 0,
+				StopBits: 0,
+				Parity:   "",
+				Timeout:  0,
+				RS485:    serial.RS485Config{},
+			}
+			connection, err := serial.Open(&serialConfig)
 			if err != nil {
 				log.Fatalln(err)
 			}
@@ -110,7 +119,16 @@ func main() {
 		Long:  ``,
 		Run: func(cmd *cobra.Command, args []string) {
 			// Open connection
-			connection, err := serial.OpenPort(serial.Config{Name: port, Baud: 115200})
+			serialConfig := serial.Config{
+				Address:  port,
+				BaudRate: 115200,
+				DataBits: 0,
+				StopBits: 0,
+				Parity:   "",
+				Timeout:  0,
+				RS485:    serial.RS485Config{},
+			}
+			connection, err := serial.Open(&serialConfig)
 			if err != nil {
 				log.Fatalln(err)
 			}
@@ -181,6 +199,9 @@ func main() {
 		},
 	}
 
+
+	log.Printf("get cmd blocksize: %s\n", blockSize)
+	//return
 	Root.AddCommand(cmdSend)
 	Root.AddCommand(cmdReceive)
 	_ = Root.Execute()
